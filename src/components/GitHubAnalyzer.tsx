@@ -19,6 +19,11 @@ interface CommitDiff {
   explanation?: string;
 }
 
+interface GitCommit {
+  sha: string;
+  [key: string]: unknown;
+}
+
 interface RepoData {
   diffs: CommitDiff[];
   sourceCode: string;
@@ -66,15 +71,22 @@ const GitHubAnalyzer = () => {
 
     setIsProcessing(true);
     try {
-      const commitsResponse = await fetch(
-        `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits?per_page=100`
-      );
-
-      if (!commitsResponse.ok) {
-        throw new Error("Failed to fetch commit history");
+      const allCommits: GitCommit[] = [];
+      let page = 1;
+      const perPage = 100;
+      while (true) {
+        const commitsResponse = await fetch(
+          `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits?per_page=${perPage}&page=${page}`
+        );
+        if (!commitsResponse.ok) {
+          throw new Error("Failed to fetch commit history");
+        }
+        const commitsPage = await commitsResponse.json();
+        allCommits.push(...commitsPage);
+        if (commitsPage.length < perPage) break;
+        page += 1;
       }
-
-      const commits = await commitsResponse.json();
+      const commits = allCommits;
 
       const contentsResponse = await fetch(
         `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/contents`
