@@ -8,22 +8,25 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, Github, Bot, FileText, History } from "lucide-react";
+import { Loader2, Github, Bot, History } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
+interface CommitDiff {
+  sha: string;
+  message: string;
+  diff: string;
+  explanation?: string;
+}
+
 interface RepoData {
-  sourceCode: string;
-  commitHistory: string;
-  combinedContent: string;
+  diffs: CommitDiff[];
 }
 
 const GitHubAnalyzer = () => {
   const [repoUrl, setRepoUrl] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [repoData, setRepoData] = useState<RepoData | null>(null);
-  const [analysis, setAnalysis] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
   const { toast } = useToast();
 
@@ -55,18 +58,6 @@ const GitHubAnalyzer = () => {
 
     setIsProcessing(true);
     try {
-      // Fetch repository contents
-      const contentsResponse = await fetch(
-        `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/contents`
-      );
-
-      if (!contentsResponse.ok) {
-        throw new Error("Failed to fetch repository contents");
-      }
-
-      const contents = await contentsResponse.json();
-
-      // Fetch commit history
       const commitsResponse = await fetch(
         `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits?per_page=50`
       );
@@ -77,113 +68,44 @@ const GitHubAnalyzer = () => {
 
       const commits = await commitsResponse.json();
 
-      // Process source code files
-      let sourceCode = `# Source Code for ${repoInfo.owner}/${repoInfo.repo}\n\n`;
-
-      const processFileContents = async (items: any[], path = "") => {
-        for (const item of items) {
-          if (
-            item.type === "file" &&
-            (item.name.endsWith(".js") ||
-              item.name.endsWith(".ts") ||
-              item.name.endsWith(".tsx") ||
-              item.name.endsWith(".jsx") ||
-              item.name.endsWith(".py") ||
-              item.name.endsWith(".java") ||
-              item.name.endsWith(".cpp") ||
-              item.name.endsWith(".c") ||
-              item.name.endsWith(".md") ||
-              item.name.endsWith(".txt") ||
-              item.name.endsWith(".json") ||
-              item.name.endsWith(".yml") ||
-              item.name.endsWith(".yaml"))
-          ) {
-            try {
-              const fileResponse = await fetch(item.download_url);
-              const fileContent = await fileResponse.text();
-              sourceCode += `## File: ${path}${item.name}\n\`\`\`\n${fileContent}\n\`\`\`\n\n`;
-            } catch (error) {
-              console.error(`Error fetching file ${item.name}:`, error);
-            }
-          } else if (
-            item.type === "dir" &&
-            !item.name.startsWith(".") &&
-            item.name !== "node_modules"
-          ) {
-            try {
-              const dirResponse = await fetch(item.url);
-              const dirContents = await dirResponse.json();
-              await processFileContents(dirContents, `${path}${item.name}/`);
-            } catch (error) {
-              console.error(`Error fetching directory ${item.name}:`, error);
-            }
-          }
-        }
-      };
-
-      await processFileContents(contents);
-
-      // Process commit history with detailed changes
-      let commitHistory = `# Commit History for ${repoInfo.owner}/${repoInfo.repo}\n\n`;
+      const diffs: CommitDiff[] = [];
 
       for (const commit of commits) {
-        commitHistory += `## Commit: ${commit.sha.substring(0, 7)}\n`;
-        commitHistory += `**Author:** ${commit.commit.author.name} <${commit.commit.author.email}>\n`;
-        commitHistory += `**Date:** ${new Date(
-          commit.commit.author.date
-        ).toLocaleString()}\n`;
-        commitHistory += `**Message:** ${commit.commit.message}\n`;
-
         try {
-          // Fetch detailed commit data including file changes
           const commitResponse = await fetch(
             `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits/${commit.sha}`
           );
           if (commitResponse.ok) {
             const commitDetails = await commitResponse.json();
-
+            let diffText = "";
             if (commitDetails.files && commitDetails.files.length > 0) {
-              commitHistory += `**Files Changed:** ${commitDetails.files.length}\n`;
-              commitHistory += `**Changes:**\n`;
-
               commitDetails.files.forEach((file: any) => {
-                commitHistory += `\n### ${file.filename}\n`;
-                commitHistory += `- Status: ${file.status}\n`;
-                commitHistory += `- Additions: +${
-                  file.additions || 0
-                }, Deletions: -${file.deletions || 0}\n`;
-
-                if (file.patch && file.patch.length < 2000) {
-                  // Limit patch size
-                  commitHistory += `- Changes:\n\`\`\`diff\n${file.patch}\n\`\`\`\n`;
-                } else if (file.patch) {
-                  commitHistory += `- Changes: [Large diff truncated - ${file.patch.length} characters]\n`;
+                if (file.patch) {
+                  diffText += `### ${file.filename}\n\`\`\`diff\n${file.patch}\n\`\`\`\n`;
                 }
               });
             }
+            diffs.push({
+              sha: commit.sha,
+              message: commit.commit.message,
+              diff: diffText,
+            });
           }
         } catch (error) {
           console.error(
             `Error fetching commit details for ${commit.sha}:`,
             error
           );
-          commitHistory += `**Note:** Could not fetch detailed changes for this commit\n`;
         }
-
-        commitHistory += `\n---\n\n`;
       }
 
-      const combinedContent = `${sourceCode}\n\n---\n\n${commitHistory}`;
-
       setRepoData({
-        sourceCode,
-        commitHistory,
-        combinedContent,
+        diffs,
       });
 
       toast({
         title: "Repository processed successfully",
-        description: `Fetched ${commits.length} commits and processed source files`,
+        description: `Fetched ${diffs.length} commits`,
       });
     } catch (error) {
       console.error("Error processing repository:", error);
@@ -198,7 +120,7 @@ const GitHubAnalyzer = () => {
     }
   };
 
-  const analyzeWithOpenAI = async () => {
+  const generateLesson = async (index: number) => {
     if (!repoData || !openaiKey.trim()) {
       toast({
         title: "Missing data",
@@ -215,25 +137,22 @@ const GitHubAnalyzer = () => {
           "Your OpenAI API key should start with 'sk-'. Please check and try again.",
         variant: "destructive",
       });
-      setAnalysis(
-        "Error: Invalid API key format. Your OpenAI API key should start with 'sk-'."
-      );
+      console.error("Invalid API key format");
       return;
     }
     setIsProcessing(true);
     try {
-      // Truncate content more aggressively to ensure it fits within API limits
-      const maxContentLength = 50000; // Reduced from 100k to be safer
-      let contentToAnalyze = repoData.combinedContent;
-
-      console.log("Original content length:", contentToAnalyze.length);
-
-      if (contentToAnalyze.length > maxContentLength) {
-        contentToAnalyze =
-          contentToAnalyze.substring(0, maxContentLength) +
-          "\n\n[Content truncated due to size limits]";
-        console.log("Content truncated to:", contentToAnalyze.length);
+      const diff = repoData.diffs[index];
+      if (!diff.diff) {
+        toast({
+          title: "No diff",
+          description: "This commit has no diff available",
+          variant: "destructive",
+        });
+        return;
       }
+
+      let contentToAnalyze = diff.diff;
 
       const requestBody = {
         model: "gpt-4o",
@@ -241,14 +160,14 @@ const GitHubAnalyzer = () => {
           {
             role: "system",
             content:
-              "You are a senior software engineer and code reviewer. Analyze the provided repository code and commit history to give insights about the codebase, architecture, development patterns, and suggestions for improvement. Keep your response concise but comprehensive.",
+              "You are a technical educator. Provide a beginner-friendly explanation (at least 500 words) of the following code changes.",
           },
           {
             role: "user",
-            content: `Please analyze this repository:\n\n${contentToAnalyze}`,
+            content: contentToAnalyze,
           },
         ],
-        max_tokens: 3000, // Reduced to ensure response fits
+        max_tokens: 3000,
         temperature: 0.7,
       };
 
@@ -280,7 +199,6 @@ const GitHubAnalyzer = () => {
         } catch (e) {
           console.error("Could not parse error response:", e);
         }
-        setAnalysis(`Error: ${errorMessage}`);
         throw new Error(errorMessage);
       }
 
@@ -288,15 +206,16 @@ const GitHubAnalyzer = () => {
       console.log("OpenAI API response received successfully");
 
       if (!data.choices || !data.choices[0] || !data.choices[0].message) {
-        setAnalysis("Error: Invalid response format from OpenAI API");
         throw new Error("Invalid response format from OpenAI API");
       }
 
-      setAnalysis(data.choices[0].message.content);
+      const newDiffs = [...repoData.diffs];
+      newDiffs[index].explanation = data.choices[0].message.content;
+      setRepoData({ diffs: newDiffs });
 
       toast({
-        title: "Analysis complete",
-        description: "Repository has been analyzed by AI",
+        title: "Lesson generated",
+        description: `Explanation created for commit ${diff.sha.substring(0, 7)}`,
       });
     } catch (error) {
       console.error("Error analyzing with OpenAI:", error);
@@ -308,14 +227,7 @@ const GitHubAnalyzer = () => {
             : "Failed to analyze repository. Please check your API key and try again.",
         variant: "destructive",
       });
-      // Error message is already set in setAnalysis above if API error, but set fallback here too
-      if (!analysis) {
-        setAnalysis(
-          error instanceof Error
-            ? `Error: ${error.message}`
-            : "Error: Failed to analyze repository. Please check your API key and try again."
-        );
-      }
+      // Error message already shown via toast
     } finally {
       setIsProcessing(false);
     }
@@ -388,77 +300,49 @@ const GitHubAnalyzer = () => {
 
         {/* Results Section */}
         {repoData && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Combined Content */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <FileText className="h-5 w-5" />
-                  Combined Content
-                  <Badge variant="secondary">
-                    {repoData.combinedContent.length} chars
-                  </Badge>
-                </CardTitle>
-                <CardDescription>
-                  Source code and commit history combined
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Textarea
-                  value={repoData.combinedContent}
-                  readOnly
-                  className="min-h-[400px] font-mono text-xs bg-code-bg border-code-border"
-                />
-                <div className="mt-4">
+          <div className="space-y-6">
+            {repoData.diffs.map((d, idx) => (
+              <Card key={d.sha}>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <History className="h-5 w-5" />
+                    {d.sha.substring(0, 7)}
+                  </CardTitle>
+                  <CardDescription>{d.message}</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <Textarea
+                    value={d.diff}
+                    readOnly
+                    className="min-h-[300px] font-mono text-xs bg-code-bg border-code-border"
+                  />
+                  {d.explanation && (
+                    <div className="prose prose-sm max-w-none dark:prose-invert">
+                      <pre className="whitespace-pre-wrap bg-code-bg p-4 rounded-lg border border-code-border text-sm">
+                        {d.explanation}
+                      </pre>
+                    </div>
+                  )}
                   <Button
-                    onClick={analyzeWithOpenAI}
+                    onClick={() => generateLesson(idx)}
                     disabled={isProcessing || !openaiKey.trim()}
                     className="w-full"
                   >
                     {isProcessing ? (
                       <>
                         <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                        Analyzing...
+                        Generating...
                       </>
                     ) : (
                       <>
                         <Bot className="h-4 w-4 mr-2" />
-                        Analyze with AI
+                        {d.explanation ? "Regenerate Lesson" : "Generate Lesson"}
                       </>
                     )}
                   </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* AI Analysis */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Bot className="h-5 w-5" />
-                  AI Analysis
-                </CardTitle>
-                <CardDescription>
-                  Insights and recommendations from OpenAI
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {analysis ? (
-                  <div className="prose prose-sm max-w-none dark:prose-invert">
-                    <pre className="whitespace-pre-wrap bg-code-bg p-4 rounded-lg border border-code-border text-sm">
-                      {analysis}
-                    </pre>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-center h-[400px] text-muted-foreground">
-                    <div className="text-center">
-                      <Bot className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                      <p>Click "Analyze with AI" to get insights</p>
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            ))}
           </div>
         )}
       </div>
