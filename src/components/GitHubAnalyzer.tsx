@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -21,6 +21,7 @@ interface CommitDiff {
 
 interface RepoData {
   diffs: CommitDiff[];
+  sourceCode: string;
 }
 
 const GitHubAnalyzer = () => {
@@ -28,12 +29,19 @@ const GitHubAnalyzer = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [repoData, setRepoData] = useState<RepoData | null>(null);
   const [openaiKey, setOpenaiKey] = useState("");
+  const [showLessons, setShowLessons] = useState(false);
+  const [currentIndex, setCurrentIndex] = useState(0);
   const { toast } = useToast();
 
   const extractRepoInfo = (url: string) => {
-    const match = url.match(/github\.com\/([^\/]+)\/([^\/]+)/);
-    if (!match) return null;
-    return { owner: match[1], repo: match[2].replace(".git", "") };
+    try {
+      const { pathname } = new URL(url);
+      const [, owner, repo] = pathname.split("/");
+      if (!owner || !repo) return null;
+      return { owner, repo: repo.replace(".git", "") };
+    } catch {
+      return null;
+    }
   };
 
   const fetchRepoData = async () => {
@@ -59,7 +67,7 @@ const GitHubAnalyzer = () => {
     setIsProcessing(true);
     try {
       const commitsResponse = await fetch(
-        `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits?per_page=50`
+        `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits?per_page=100`
       );
 
       if (!commitsResponse.ok) {
@@ -67,6 +75,62 @@ const GitHubAnalyzer = () => {
       }
 
       const commits = await commitsResponse.json();
+
+      const contentsResponse = await fetch(
+        `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/contents`
+      );
+      if (!contentsResponse.ok) {
+        throw new Error("Failed to fetch repository contents");
+      }
+      const contents = await contentsResponse.json();
+
+      let sourceCode = `# Source Code for ${repoInfo.owner}/${repoInfo.repo}\n\n`;
+
+      const processFileContents = async (
+        items: { type: string; name: string; download_url?: string; url?: string }[],
+        path = ""
+      ) => {
+        for (const item of items) {
+          if (
+            item.type === "file" &&
+            (item.name.endsWith(".js") ||
+              item.name.endsWith(".ts") ||
+              item.name.endsWith(".tsx") ||
+              item.name.endsWith(".jsx") ||
+              item.name.endsWith(".py") ||
+              item.name.endsWith(".java") ||
+              item.name.endsWith(".cpp") ||
+              item.name.endsWith(".c") ||
+              item.name.endsWith(".md") ||
+              item.name.endsWith(".txt") ||
+              item.name.endsWith(".json") ||
+              item.name.endsWith(".yml") ||
+              item.name.endsWith(".yaml"))
+          ) {
+            try {
+              const fileResponse = await fetch(item.download_url!);
+              const fileContent = await fileResponse.text();
+              sourceCode += `## File: ${path}${item.name}\n\`\`\`\n${fileContent}\n\`\`\`\n\n`;
+            } catch (error) {
+              console.error(`Error fetching file ${item.name}:`, error);
+            }
+          } else if (
+            item.type === "dir" &&
+            !item.name.startsWith(".") &&
+            item.name !== "node_modules"
+          ) {
+            try {
+              const dirResponse = await fetch(item.url!);
+              const dirContents = await dirResponse.json();
+              await processFileContents(dirContents, `${path}${item.name}/`);
+            } catch (error) {
+              console.error(`Error fetching directory ${item.name}:`, error);
+            }
+          }
+        }
+      };
+
+      await processFileContents(contents);
 
       const diffs: CommitDiff[] = [];
 
@@ -78,8 +142,8 @@ const GitHubAnalyzer = () => {
           if (commitResponse.ok) {
             const commitDetails = await commitResponse.json();
             let diffText = "";
-            if (commitDetails.files && commitDetails.files.length > 0) {
-              commitDetails.files.forEach((file: any) => {
+              if (commitDetails.files && commitDetails.files.length > 0) {
+                commitDetails.files.forEach((file: { filename: string; patch?: string }) => {
                 if (file.patch) {
                   diffText += `### ${file.filename}\n\`\`\`diff\n${file.patch}\n\`\`\`\n`;
                 }
@@ -101,6 +165,7 @@ const GitHubAnalyzer = () => {
 
       setRepoData({
         diffs,
+        sourceCode,
       });
 
       toast({
@@ -120,7 +185,8 @@ const GitHubAnalyzer = () => {
     }
   };
 
-  const generateLesson = async (index: number) => {
+  const generateLesson = useCallback(
+    async (index: number) => {
     if (!repoData || !openaiKey.trim()) {
       toast({
         title: "Missing data",
@@ -152,7 +218,13 @@ const GitHubAnalyzer = () => {
         return;
       }
 
-      let contentToAnalyze = diff.diff;
+      let contentToAnalyze = `Repository source:\n${repoData.sourceCode}\n\nDiff:\n${diff.diff}`;
+
+      if (contentToAnalyze.length > 50000) {
+        contentToAnalyze =
+          contentToAnalyze.substring(0, 50000) +
+          "\n\n[Content truncated due to size limits]";
+      }
 
       const requestBody = {
         model: "gpt-4o",
@@ -231,7 +303,26 @@ const GitHubAnalyzer = () => {
     } finally {
       setIsProcessing(false);
     }
+  }, [openaiKey, repoData]);
+
+  const startLessons = () => {
+    if (repoData && repoData.diffs.length > 0) {
+      setCurrentIndex(0);
+      setShowLessons(true);
+    }
   };
+
+  useEffect(() => {
+    if (
+      showLessons &&
+      repoData &&
+      repoData.diffs[currentIndex] &&
+      !repoData.diffs[currentIndex].explanation &&
+      !isProcessing
+    ) {
+      generateLesson(currentIndex);
+    }
+  }, [showLessons, repoData, currentIndex, generateLesson, isProcessing]);
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -299,8 +390,11 @@ const GitHubAnalyzer = () => {
         </Card>
 
         {/* Results Section */}
-        {repoData && (
+        {repoData && !showLessons && (
           <div className="space-y-6">
+            <div className="text-right">
+              <Button onClick={startLessons}>Start Lessons</Button>
+            </div>
             {repoData.diffs.map((d, idx) => (
               <Card key={d.sha}>
                 <CardHeader>
@@ -343,6 +437,48 @@ const GitHubAnalyzer = () => {
                 </CardContent>
               </Card>
             ))}
+          </div>
+        )}
+
+        {repoData && showLessons && (
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <History className="h-5 w-5" />
+                  {repoData.diffs[currentIndex].sha.substring(0, 7)}
+                </CardTitle>
+                <CardDescription>{repoData.diffs[currentIndex].message}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {repoData.diffs[currentIndex].explanation ? (
+                  <div className="prose prose-sm max-w-none dark:prose-invert">
+                    <pre className="whitespace-pre-wrap bg-code-bg p-4 rounded-lg border border-code-border text-sm">
+                      {repoData.diffs[currentIndex].explanation}
+                    </pre>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-[200px] text-muted-foreground">
+                    {isProcessing ? (
+                      <Loader2 className="h-6 w-6 animate-spin" />
+                    ) : (
+                      <p>Generating lesson...</p>
+                    )}
+                  </div>
+                )}
+                <div className="flex justify-between">
+                  <Button variant="secondary" onClick={() => setShowLessons(false)}>
+                    Exit
+                  </Button>
+                  <Button
+                    onClick={() => setCurrentIndex((i) => Math.min(i + 1, repoData.diffs.length - 1))}
+                    disabled={currentIndex >= repoData.diffs.length - 1 || isProcessing}
+                  >
+                    {currentIndex >= repoData.diffs.length - 1 ? "Done" : "Next"}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
           </div>
         )}
       </div>
