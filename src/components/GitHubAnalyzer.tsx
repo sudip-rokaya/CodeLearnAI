@@ -66,16 +66,6 @@ const GitHubAnalyzer = () => {
 
     setIsProcessing(true);
     try {
-      const commitsResponse = await fetch(
-        `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits?per_page=100`
-      );
-
-      if (!commitsResponse.ok) {
-        throw new Error("Failed to fetch commit history");
-      }
-
-      const commits = await commitsResponse.json();
-
       const contentsResponse = await fetch(
         `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/contents`
       );
