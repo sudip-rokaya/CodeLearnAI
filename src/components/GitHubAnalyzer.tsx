@@ -19,7 +19,13 @@ interface CommitDiff {
   explanation?: string;
 }
 
+interface GitCommit {
+  sha: string;
+  [key: string]: unknown;
+}
 
+interface RepoData {
+  diffs: CommitDiff[];
 }
 
 const GitHubAnalyzer = () => {
@@ -27,6 +33,7 @@ const GitHubAnalyzer = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [repoData, setRepoData] = useState<RepoData | null>(null);
   const [openaiKey, setOpenaiKey] = useState("");
+  const [githubToken, setGithubToken] = useState("");
 
   const [showLessons, setShowLessons] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -65,7 +72,17 @@ const GitHubAnalyzer = () => {
 
     setIsProcessing(true);
     try {
-
+      const allCommits: GitCommit[] = [];
+      const headers = githubToken ? { Authorization: `token ${githubToken}` } : {};
+      let page = 1;
+      const perPage = 100;
+      while (true) {
+        const commitsResponse = await fetch(
+          `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits?per_page=${perPage}&page=${page}`,
+          { headers }
+        );
+        if (!commitsResponse.ok) {
+          throw new Error("Failed to fetch commit history");
         }
         const commitsPage = await commitsResponse.json();
         allCommits.push(...commitsPage);
@@ -79,9 +96,10 @@ const GitHubAnalyzer = () => {
 
       for (const commit of commits) {
         try {
-          const commitResponse = await fetch(
-            `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits/${commit.sha}`
-          , { headers });
+        const commitResponse = await fetch(
+          `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits/${commit.sha}`,
+          { headers }
+        );
           if (commitResponse.ok) {
             const commitDetails = await commitResponse.json();
             let diffText = "";
@@ -160,7 +178,7 @@ const GitHubAnalyzer = () => {
         });
         return;
       }
-
+      let contentToAnalyze = `Commit message: ${diff.message}\n\n${diff.diff}`;
 
       if (contentToAnalyze.length > 50000) {
         contentToAnalyze =
