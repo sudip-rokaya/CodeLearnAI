@@ -20,9 +20,6 @@ interface CommitDiff {
 }
 
 
-interface RepoData {
-  diffs: CommitDiff[];
-  sourceCode: string;
 }
 
 const GitHubAnalyzer = () => {
@@ -30,6 +27,7 @@ const GitHubAnalyzer = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [repoData, setRepoData] = useState<RepoData | null>(null);
   const [openaiKey, setOpenaiKey] = useState("");
+
   const [showLessons, setShowLessons] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const { toast } = useToast();
@@ -68,61 +66,14 @@ const GitHubAnalyzer = () => {
     setIsProcessing(true);
     try {
 
-      const contentsResponse = await fetch(
-        `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/contents`
-      );
-      if (!contentsResponse.ok) {
-        throw new Error("Failed to fetch repository contents");
-      }
-      const contents = await contentsResponse.json();
-
-      let sourceCode = `# Source Code for ${repoInfo.owner}/${repoInfo.repo}\n\n`;
-
-      const processFileContents = async (
-        items: { type: string; name: string; download_url?: string; url?: string }[],
-        path = ""
-      ) => {
-        for (const item of items) {
-          if (
-            item.type === "file" &&
-            (item.name.endsWith(".js") ||
-              item.name.endsWith(".ts") ||
-              item.name.endsWith(".tsx") ||
-              item.name.endsWith(".jsx") ||
-              item.name.endsWith(".py") ||
-              item.name.endsWith(".java") ||
-              item.name.endsWith(".cpp") ||
-              item.name.endsWith(".c") ||
-              item.name.endsWith(".md") ||
-              item.name.endsWith(".txt") ||
-              item.name.endsWith(".json") ||
-              item.name.endsWith(".yml") ||
-              item.name.endsWith(".yaml"))
-          ) {
-            try {
-              const fileResponse = await fetch(item.download_url!);
-              const fileContent = await fileResponse.text();
-              sourceCode += `## File: ${path}${item.name}\n\`\`\`\n${fileContent}\n\`\`\`\n\n`;
-            } catch (error) {
-              console.error(`Error fetching file ${item.name}:`, error);
-            }
-          } else if (
-            item.type === "dir" &&
-            !item.name.startsWith(".") &&
-            item.name !== "node_modules"
-          ) {
-            try {
-              const dirResponse = await fetch(item.url!);
-              const dirContents = await dirResponse.json();
-              await processFileContents(dirContents, `${path}${item.name}/`);
-            } catch (error) {
-              console.error(`Error fetching directory ${item.name}:`, error);
-            }
-          }
         }
-      };
+        const commitsPage = await commitsResponse.json();
+        allCommits.push(...commitsPage);
+        if (commitsPage.length < perPage) break;
+        page += 1;
+      }
+      const commits = allCommits;
 
-      await processFileContents(contents);
 
       const diffs: CommitDiff[] = [];
 
@@ -130,7 +81,7 @@ const GitHubAnalyzer = () => {
         try {
           const commitResponse = await fetch(
             `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits/${commit.sha}`
-          );
+          , { headers });
           if (commitResponse.ok) {
             const commitDetails = await commitResponse.json();
             let diffText = "";
@@ -157,7 +108,7 @@ const GitHubAnalyzer = () => {
 
       setRepoData({
         diffs,
-        sourceCode,
+
       });
 
       toast({
@@ -210,7 +161,6 @@ const GitHubAnalyzer = () => {
         return;
       }
 
-      let contentToAnalyze = `Repository source:\n${repoData.sourceCode}\n\nDiff:\n${diff.diff}`;
 
       if (contentToAnalyze.length > 50000) {
         contentToAnalyze =
@@ -377,6 +327,10 @@ const GitHubAnalyzer = () => {
               <p className="text-xs text-muted-foreground">
                 Your API key is stored locally and never saved
               </p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">GitHub Token (optional)</label>
+              <Input type="password" placeholder="ghp_..." value={githubToken} onChange={(e) => setGithubToken(e.target.value)} className="font-mono" />
             </div>
           </CardContent>
         </Card>
