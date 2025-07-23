@@ -19,7 +19,13 @@ interface CommitDiff {
   explanation?: string;
 }
 
+interface GitCommit {
+  sha: string;
+  [key: string]: unknown;
+}
 
+interface RepoData {
+  diffs: CommitDiff[];
 }
 
 const GitHubAnalyzer = () => {
@@ -27,6 +33,7 @@ const GitHubAnalyzer = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [repoData, setRepoData] = useState<RepoData | null>(null);
   const [openaiKey, setOpenaiKey] = useState("");
+  const [githubToken, setGithubToken] = useState("");
 
   const [showLessons, setShowLessons] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -65,7 +72,21 @@ const GitHubAnalyzer = () => {
 
     setIsProcessing(true);
     try {
-
+      const allCommits: GitCommit[] = [];
+      const headers = githubToken ? { Authorization: `token ${githubToken}` } : {};
+      let page = 1;
+      const perPage = 100;
+      while (true) {
+        const commitsResponse = await fetch(
+          `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits?per_page=${perPage}&page=${page}`,
+          { headers }
+        );
+        if (!commitsResponse.ok) {
+          const msg =
+            commitsResponse.status === 403
+              ? "GitHub API rate limit reached. Provide a personal token."
+              : "Failed to fetch commit history";
+          throw new Error(msg);
         }
         const commitsPage = await commitsResponse.json();
         allCommits.push(...commitsPage);
@@ -74,35 +95,46 @@ const GitHubAnalyzer = () => {
       }
       const commits = allCommits;
 
-
       const diffs: CommitDiff[] = [];
 
       for (const commit of commits) {
         try {
           const commitResponse = await fetch(
-            `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits/${commit.sha}`
-          , { headers });
-          if (commitResponse.ok) {
-            const commitDetails = await commitResponse.json();
-            let diffText = "";
-              if (commitDetails.files && commitDetails.files.length > 0) {
-                commitDetails.files.forEach((file: { filename: string; patch?: string }) => {
-                if (file.patch) {
-                  diffText += `### ${file.filename}\n\`\`\`diff\n${file.patch}\n\`\`\`\n`;
-                }
-              });
-            }
-            diffs.push({
-              sha: commit.sha,
-              message: commit.commit.message,
-              diff: diffText,
+            `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/commits/${commit.sha}`,
+            { headers }
+          );
+          if (!commitResponse.ok) {
+            const msg =
+              commitResponse.status === 403
+                ? "GitHub API rate limit reached. Provide a personal token."
+                : `Failed to fetch commit ${commit.sha}`;
+            throw new Error(msg);
+          }
+          const commitDetails = await commitResponse.json();
+          let diffText = "";
+          if (commitDetails.files && commitDetails.files.length > 0) {
+            commitDetails.files.forEach((file: { filename: string; patch?: string }) => {
+              if (file.patch) {
+                diffText += `### ${file.filename}\n\`\`\`diff\n${file.patch}\n\`\`\`\n`;
+              }
             });
           }
+          diffs.push({
+            sha: commit.sha,
+            message: commit.commit.message,
+            diff: diffText,
+          });
         } catch (error) {
-          console.error(
-            `Error fetching commit details for ${commit.sha}:`,
-            error
-          );
+          console.error(`Error fetching commit details for ${commit.sha}:`, error);
+          if (error instanceof Error && error.message.includes("rate limit")) {
+            toast({
+              title: "GitHub rate limit",
+              description:
+                "GitHub API rate limit reached. Add a personal token and try again.",
+              variant: "destructive",
+            });
+            break;
+          }
         }
       }
 
@@ -174,7 +206,7 @@ const GitHubAnalyzer = () => {
           {
             role: "system",
             content:
-              "You are a technical educator. Provide a beginner-friendly explanation (at least 500 words) of the following code changes.",
+              "You are a professional software mentor. For each diff provided, write a thorough yet beginner-friendly lesson of around 500 words explaining what changed and why.",
           },
           {
             role: "user",
@@ -251,6 +283,9 @@ const GitHubAnalyzer = () => {
     if (repoData && repoData.diffs.length > 0) {
       setCurrentIndex(0);
       setShowLessons(true);
+      if (!repoData.diffs[0].explanation) {
+        generateLesson(0);
+      }
     }
   };
 
@@ -339,7 +374,7 @@ const GitHubAnalyzer = () => {
         {repoData && !showLessons && (
           <div className="space-y-6">
             <div className="text-right">
-              <Button onClick={startLessons}>Start Lessons</Button>
+              <Button onClick={startLessons}>Generate Lessons</Button>
             </div>
             {repoData.diffs.map((d, idx) => (
               <Card key={d.sha}>
@@ -395,6 +430,9 @@ const GitHubAnalyzer = () => {
                   {repoData.diffs[currentIndex].sha.substring(0, 7)}
                 </CardTitle>
                 <CardDescription>{repoData.diffs[currentIndex].message}</CardDescription>
+                <p className="text-sm text-muted-foreground">
+                  Lesson {currentIndex + 1} of {repoData.diffs.length}
+                </p>
               </CardHeader>
               <CardContent className="space-y-4">
                 {repoData.diffs[currentIndex].explanation ? (
@@ -412,16 +450,25 @@ const GitHubAnalyzer = () => {
                     )}
                   </div>
                 )}
-                <div className="flex justify-between">
+                <div className="flex justify-between gap-2">
                   <Button variant="secondary" onClick={() => setShowLessons(false)}>
                     Exit
                   </Button>
-                  <Button
-                    onClick={() => setCurrentIndex((i) => Math.min(i + 1, repoData.diffs.length - 1))}
-                    disabled={currentIndex >= repoData.diffs.length - 1 || isProcessing}
-                  >
-                    {currentIndex >= repoData.diffs.length - 1 ? "Done" : "Next"}
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="secondary"
+                      onClick={() => setCurrentIndex((i) => Math.max(i - 1, 0))}
+                      disabled={currentIndex === 0 || isProcessing}
+                    >
+                      Prev
+                    </Button>
+                    <Button
+                      onClick={() => setCurrentIndex((i) => Math.min(i + 1, repoData.diffs.length - 1))}
+                      disabled={currentIndex >= repoData.diffs.length - 1 || isProcessing}
+                    >
+                      {currentIndex >= repoData.diffs.length - 1 ? "Done" : "Next"}
+                    </Button>
+                  </div>
                 </div>
               </CardContent>
             </Card>
