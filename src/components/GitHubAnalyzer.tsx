@@ -19,6 +19,7 @@ interface CommitDiff {
   explanation?: string;
 }
 
+
 interface RepoData {
   diffs: CommitDiff[];
   sourceCode: string;
@@ -66,6 +67,7 @@ const GitHubAnalyzer = () => {
 
     setIsProcessing(true);
     try {
+
       const contentsResponse = await fetch(
         `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/contents`
       );
